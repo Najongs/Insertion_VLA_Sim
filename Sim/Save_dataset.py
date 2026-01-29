@@ -144,7 +144,7 @@ def main():
         phantom_body_id = -1
 
     recorder = SimRecorder(SAVE_DIR)
-    home_pose = np.array([0.5, 0.0, 0.0, 0.0, -0.5, 0.0])
+    home_pose = np.array([0.5236, -0.3491, 0.3491, 0.0000, 0.5236, 1.0472]) # (30, -20, 20, 0, 30, 60)
     current_speed = 0.5 
 
     def get_ee_pose_6d_scaled():
@@ -168,7 +168,7 @@ def main():
         mujoco.mj_forward(model, data)
         
         last_ee_pose = get_ee_pose_6d_scaled()
-        task_state, traj_start_time, insertion_started, accumulated_depth, align_timer, traj_initialized = 1, data.time, False, 0.0, 0, False
+        task_state, traj_start_time, insertion_started, accumulated_depth, align_timer, traj_initialized, hold_start_time = 1, data.time, False, 0.0, 0, False, None
         
         p_entry, p_depth = data.site_xpos[target_entry_id].copy(), data.site_xpos[target_depth_id].copy()
         start_tip, start_back = data.site_xpos[tip_id].copy(), data.site_xpos[back_id].copy()
@@ -181,8 +181,8 @@ def main():
             t_curr = data.time
             curr_tip, curr_back = data.site_xpos[tip_id].copy(), data.site_xpos[back_id].copy()
             
-            # --- 1. Expert Trajectory Logic ---
-            if task_state == 1:
+            # --- 1. Expert Trajectory Logic (2-State System) ---
+            if task_state == 1:  # State 1: Align (정렬)
                 if not traj_initialized:
                     traj_start_time, start_tip_pos, start_back_pos, traj_initialized = t_curr, curr_tip.copy(), curr_back.copy(), True
                 progress = smooth_step((t_curr - traj_start_time) / TRAJ_DURATION)
@@ -193,19 +193,29 @@ def main():
                     if np.linalg.norm(curr_tip - goal_tip) < 0.002: align_timer += 1
                     else: align_timer = 0
                     if align_timer > 20: task_state, insertion_started = 2, False
-            elif task_state == 2:
+            elif task_state == 2:  # State 2: Insert + Hold (삽입 + 대기 통합)
                 if not insertion_started:
-                    phase3_base_tip, insertion_started, accumulated_depth = curr_tip.copy(), True, 0.0
-                accumulated_depth += 0.0000025
+                    phase3_base_tip, insertion_started, accumulated_depth, hold_start_time = curr_tip.copy(), True, 0.0, None
+
                 axis_dir = (p_depth - p_entry) / (np.linalg.norm(p_depth - p_entry) + 1e-10)
-                target_tip_pos = phase3_base_tip + (axis_dir * accumulated_depth)
-                target_back_pos = target_tip_pos - (axis_dir * needle_len)
-                if accumulated_depth >= TARGET_INSERTION_DEPTH: task_state, hold_start_time = 3, data.time
-            elif task_state == 3:
-                axis_dir = (p_depth - p_entry) / (np.linalg.norm(p_depth - p_entry) + 1e-10)
-                target_tip_pos = phase3_base_tip + (axis_dir * TARGET_INSERTION_DEPTH)
-                target_back_pos = target_tip_pos - (axis_dir * needle_len)
-                if data.time - hold_start_time >= 1.0: success = True; break
+
+                # 삽입이 완료되지 않은 경우: 계속 삽입
+                if accumulated_depth < TARGET_INSERTION_DEPTH:
+                    accumulated_depth += 0.0000025
+                    target_tip_pos = phase3_base_tip + (axis_dir * accumulated_depth)
+                    target_back_pos = target_tip_pos - (axis_dir * needle_len)
+                    # 목표 깊이 도달 시 대기 타이머 시작
+                    if accumulated_depth >= TARGET_INSERTION_DEPTH:
+                        hold_start_time = data.time
+                # 삽입이 완료된 경우: 위치 고정 및 대기
+                else:
+                    if hold_start_time is None:
+                        hold_start_time = data.time
+                    # 목표를 최종 삽입 깊이로 고정
+                    target_tip_pos = phase3_base_tip + (axis_dir * TARGET_INSERTION_DEPTH)
+                    target_back_pos = target_tip_pos - (axis_dir * needle_len)
+                    # 1초 대기 후 성공
+                    if data.time - hold_start_time >= 1.0: success = True; break
 
             # --- 2. IK Solver ---
             err_tip, err_back = target_tip_pos - curr_tip, target_back_pos - curr_back
