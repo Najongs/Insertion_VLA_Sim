@@ -4,7 +4,7 @@ Simple Parallel Data Collection (Without Domain Randomization)
 Runs multiple Save_dataset.py instances in parallel
 
 Usage:
-    python run_parallel_nodomain.py --workers 5 --episodes 100
+    python run_parallel_nodomain.py --workers 10 --episodes 100
 """
 
 import os
@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--workers', type=int, default=5, help='Number of parallel workers')
     parser.add_argument('--episodes', type=int, default=100, help='Episodes per worker')
     parser.add_argument('--base_dir', type=str,
-                       default='/home/najo/NAS/VLA/dataset/New_dataset/collected_data/Eye_trocar/Eye_trocar_sim/collected_data_sim_nodomain_6d_clean',
+                       default='/home/najo/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_sim_6d_clean',
                        help='Base output directory')
     args = parser.parse_args()
 
@@ -31,6 +31,7 @@ def main():
     print(f"Episodes per worker: {args.episodes}")
     print(f"Total episodes: {args.workers * args.episodes}")
     print(f"Output: {args.base_dir}/worker_*")
+    print(f"Phase tracking: ✅ Enabled")
     print("=" * 80)
     print()
 
@@ -110,6 +111,9 @@ if __name__ == "__main__":
     final_dir.mkdir(parents=True, exist_ok=True)
 
     total_episodes = 0
+    successful_workers = 0
+    failed_workers = 0
+
     for i in range(args.workers):
         worker_dir = base_path / f"worker_{i}"
         if worker_dir.exists():
@@ -120,14 +124,36 @@ if __name__ == "__main__":
                     new_name = f"worker{i}_{h5_file.name}"
                     shutil.move(str(h5_file), str(final_dir / new_name))
                     total_episodes += 1
-                worker_dir.rmdir()
+                successful_workers += 1
+                try:
+                    worker_dir.rmdir()
+                except:
+                    pass  # Directory might not be empty
+            else:
+                print(f"[Worker {i}] ⚠️  No episodes collected")
+                failed_workers += 1
+        else:
+            print(f"[Worker {i}] ⚠️  Directory not found")
+            failed_workers += 1
 
     print()
     print("=" * 80)
     print("✅ Done!")
     print("=" * 80)
     print(f"Total episodes: {total_episodes}")
+    print(f"Successful workers: {successful_workers}/{args.workers}")
+    if failed_workers > 0:
+        print(f"⚠️  Failed workers: {failed_workers}")
     print(f"Location: {final_dir}")
+    print("=" * 80)
+    print()
+    print("📊 Phase Analysis:")
+    print(f"    python analyze_phase_data.py {final_dir}")
+    print()
+    print("🎬 Export to MP4:")
+    print(f"    for h5 in {final_dir}/*.h5; do")
+    print(f'        python data_replay.py "$h5" --export --fps 30')
+    print(f"    done")
     print("=" * 80)
 
 if __name__ == "__main__":

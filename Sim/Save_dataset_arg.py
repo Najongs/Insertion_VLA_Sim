@@ -25,7 +25,7 @@ SAVE_DIR = r"N:\collected_data_sim"
 BG_IMAGE_DIR = "random_backgrounds" # [필수] 배경 이미지 폴더
 MAX_EPISODES = 100   # 수집할 총 에피소드 수
 CONTROL_FREQ = 20   # 제어 주기 (Hz)
-SAVE_FPS = 15       # 데이터 저장 프레임 (Hz)
+SAVE_FPS = 30       # 데이터 저장 프레임 (Hz)
 
 # Image Settings
 IMG_WIDTH = 640
@@ -154,14 +154,15 @@ class SimRecorder:
         self.buffer = []
         self.recording = True
 
-    def add(self, frames, qpos, ee_pose, action, timestamp):
+    def add(self, frames, qpos, ee_pose, action, timestamp, phase):
         if not self.recording: return
         self.buffer.append({
             "ts": timestamp,
             "imgs": frames,
             "q": qpos,
             "p": ee_pose,
-            "act": action
+            "act": action,
+            "phase": phase
         })
 
     def save_async(self):
@@ -181,11 +182,13 @@ class SimRecorder:
                     p_data = np.array([x['p'] for x in data], dtype=np.float32)
                     act_data = np.array([x['act'] for x in data], dtype=np.float32)
                     ts_data = np.array([x['ts'] for x in data], dtype=np.float32)
+                    phase_data = np.array([x['phase'] for x in data], dtype=np.int32)
 
                     obs.create_dataset("qpos", data=q_data, compression="gzip")
                     obs.create_dataset("ee_pose", data=p_data, compression="gzip")
                     f.create_dataset("action", data=act_data, compression="gzip")
                     f.create_dataset("timestamp", data=ts_data, compression="gzip")
+                    f.create_dataset("phase", data=phase_data, compression="gzip")
 
                     first_imgs = data[0]["imgs"]
                     for cam_name in first_imgs.keys():
@@ -486,7 +489,8 @@ def main():
                     # qpos=noisy_qpos, # 노이즈 낀 값 저장
                     ee_pose=ee_pose_6d,  # Now 6D: position + orientation
                     action=current_action.copy(),
-                    timestamp=data.time
+                    timestamp=data.time,
+                    phase=task_state
                 )
 
             # Timeout check (40초)

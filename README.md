@@ -17,3 +17,4 @@ C:\Users\DGIST\Desktop\mujoco-3.4.0-windows-x86_64\bin\compile.exe combined_mode
 
 추가로 병렬생성을 위한 코드 run_parallel_nodomain.py, run_parallel_simple.py이 존재한다.
 
+데이터를 확인하기 위한 data_replay.py도 존재한다.

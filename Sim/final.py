@@ -18,8 +18,13 @@ try:
     target_entry_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "trocar_target")
     target_depth_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "trocar_depth")
     viz_tip_tgt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "viz_target_tip")
+
     phantom_pos_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "phantom_assembly") # 이동용
     rotating_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rotating_assembly")   # 회전용
+
+    sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "needle_tip")
+    link6_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "6_Link") 
+
     dof = model.nv
 except Exception as e:
     print(f"[Error] XML ID Load Failed: {e}")
@@ -27,11 +32,12 @@ except Exception as e:
 
 # === Control Parameters ===
 damping = 1e-3
-current_speed = 0.5
+base_speed = 1.0 # 기본 속도
 
 TARGET_DISTANCE_FROM_ENTRY = 0.0001
-TARGET_INSERTION_DEPTH = 0.02
+TARGET_INSERTION_DEPTH = 0.022
 COAXIAL_TOLERANCE = 50e-6
+SENSOR_THRESHOLD = 0.010  # 10mm 
 
 # State Variables
 task_state = 1
@@ -43,20 +49,19 @@ phase3_base_tip = np.zeros(3)
 # === Trajectory Variables (부드러운 움직임을 위한 변수) ===
 traj_initialized = False
 traj_start_time = 0.0
-TRAJ_DURATION = 5.0  # 정렬까지 걸리는 시간 (초) - 숫자가 클수록 더 천천히 움직임
+TRAJ_DURATION = 2.0  # 정렬까지 걸리는 시간 (초)
 start_tip_pos = np.zeros(3)
 start_back_pos = np.zeros(3)
 
 def randomize_phantom_pos(model, data):
-    # 1. 위치 이동 (Translation) -> phantom_assembly에 적용
+    # 1. 위치 이동 (Translation)
     offset_x = np.random.uniform(-0.1, 0.1)
     offset_y = np.random.uniform(-0.05, 0.03)
     offset_z = 0.0 
     new_pos = np.array([offset_x, offset_y, offset_z])
     model.body_pos[phantom_pos_id] = new_pos
     
-    # 2. 회전 (Rotation) -> rotating_assembly에 적용
-    # Z축 기준 랜덤 회전 (-30도 ~ 30도)
+    # 2. 회전 (Rotation)
     random_angle_deg = np.random.uniform(-30, 30)
     new_quat = np.zeros(4)
     mujoco.mju_euler2Quat(new_quat, [0, 0, np.deg2rad(random_angle_deg)], "xyz")
@@ -66,14 +71,13 @@ def randomize_phantom_pos(model, data):
     
 
 # === Helper: SmoothStep Function ===
-# 0에서 1로 변할 때 부드러운 S자 곡선을 그리며 변환 (Ease-In, Ease-Out 효과)
 def smooth_step(t):
     t = np.clip(t, 0.0, 1.0)
     return t * t * (3 - 2 * t)
 
 randomize_phantom_pos(model, data)
 
-print("Started: Smooth Trajectory Mode")
+print("Started: Smooth Trajectory Mode with Ray-Casting Sensor")
 
 home_pose = np.array([0.5, 0.0, 0.0, 0.0, -0.5, 0.0])
 
@@ -96,53 +100,89 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         p_depth = data.site_xpos[target_depth_id].copy()
         curr_tip = data.site_xpos[tip_id].copy()
         curr_back = data.site_xpos[back_id].copy()
+        p_sensor = data.site_xpos[sensor_id].copy()
 
         # Target Vectors
         axis_vec = p_depth - p_entry
         axis_dir = axis_vec / (np.linalg.norm(axis_vec) + 1e-10)
+
+        # ==========================================
+        # [NEW] Ray-Casting Sensor Logic
+        # ==========================================
+        # 1. 바늘의 진행 방향 벡터 계산 (Back -> Tip)
+        needle_dir = (curr_tip - curr_back)
+        needle_dir /= (np.linalg.norm(needle_dir) + 1e-10)
+
+
+        geom_id_out = np.zeros(1, dtype=np.int32) # 결과(부딪힌 지오메트리 ID)를 받을 변수
+        dist_to_surface = mujoco.mj_ray(model, data, p_sensor, needle_dir, 
+                                        None, 1, link6_id, geom_id_out)
+
+        # 3. 감지 결과 처리
+        obstacle_detected = False
+        sensor_msg = "Sensor: Clear"
         
+        # dist_to_surface가 -1이면 아무것도 없는 것, 0 이상이면 거리
+        if 0 <= dist_to_surface <= SENSOR_THRESHOLD:
+            obstacle_detected = True
+            sensor_msg = f"OBSTACLE! ({dist_to_surface*1000:.1f}mm)"
+        
+        # ==========================================
+
+        # 기본 상태 메시지 및 색상
+        if task_state == 1:
+            status_color = (255, 0, 255)
+            msg = "Aligning..."
+        elif task_state == 2:
+            status_color = (0, 255, 0)
+            msg = "Inserting..."
+        else:
+            status_color = (0, 0, 255)
+            msg = "Finished"
+
+        # 장애물 감지 시 경고 메시지로 덮어쓰기
+        if obstacle_detected:
+            status_color = (0, 165, 255) # Orange Warning
+            msg = sensor_msg
+
+        # 속도 설정 (장애물 감지 시 감속)
+        current_speed = 0.1 if obstacle_detected else base_speed
+
         # === State Machine ===
         if task_state == 1:
             # [Phase 1: Smooth Approach & Align]
-            status_color = (255, 0, 255)
             
-            # 1. 초기화: 움직임 시작 전, 현재 위치(Start)를 딱 한 번 저장
             if not traj_initialized:
                 traj_start_time = curr_time
                 start_tip_pos = curr_tip.copy()
                 start_back_pos = curr_back.copy()
                 traj_initialized = True
-                print(">>> Trajectory Generated: Moving smoothly to target.")
+                print(">>> Trajectory Generated.")
 
-            # 2. 진행률(Progress) 계산 (0.0 ~ 1.0)
             elapsed_t = curr_time - traj_start_time
             raw_progress = elapsed_t / TRAJ_DURATION
-            alpha = smooth_step(raw_progress) # 부드러운 가속/감속 적용
+            alpha = smooth_step(raw_progress)
             
-            # 3. 최종 목표 위치 계산 (Goal)
             goal_tip = p_entry - (axis_dir * TARGET_DISTANCE_FROM_ENTRY)
             goal_back = goal_tip - (axis_dir * needle_len)
             
-            # 4. 보간(Interpolation): 현재 목표점(Moving Target) 계산
-            # Start에서 Goal까지 alpha만큼 이동한 지점
+            # Interpolation
             target_tip_pos = (1 - alpha) * start_tip_pos + alpha * goal_tip
             target_back_pos = (1 - alpha) * start_back_pos + alpha * goal_back
             
-            msg = f"Aligning... {alpha*100:.1f}%"
+            if not obstacle_detected: # 장애물이 없을 때만 진행 상태 메시지 업데이트
+                msg = f"Aligning... {alpha*100:.1f}%"
 
-            # 5. 도착 확인 및 정밀 정렬 체크
             if raw_progress >= 1.0:
-                # 보간이 끝났어도 미세한 오차가 있을 수 있으므로 체크
                 dist_error = np.linalg.norm(curr_tip - goal_tip)
                 
-                # 동축 오차 확인
                 vec_entry_to_tip = curr_tip - p_entry
                 proj_point = p_entry + (np.dot(vec_entry_to_tip, axis_dir) * axis_dir)
                 dist_coaxial = np.linalg.norm(curr_tip - proj_point)
                 
                 if dist_error < 0.002 and dist_coaxial < COAXIAL_TOLERANCE:
                     align_timer += 1
-                    msg = "Holding Alignment..."
+                    if not obstacle_detected: msg = "Holding Alignment..."
                 else:
                     align_timer = 0
                 
@@ -153,8 +193,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
 
         elif task_state == 2:
             # [Phase 2: Insertion]
-            msg = f"Inserting ({accumulated_depth*1000:.1f}mm)"
-            status_color = (0, 255, 0)
+            if not obstacle_detected: msg = f"Inserting ({accumulated_depth*1000:.1f}mm)"
             
             if not insertion_started:
                 phase3_base_tip = p_entry - (axis_dir * TARGET_DISTANCE_FROM_ENTRY)
@@ -162,21 +201,20 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
                 accumulated_depth = 0.0
 
             step_z = 0.000025
+            
+            # 장애물이 감지되어도 멈추지 않고 천천히 가려면 아래 주석 해제, 멈추려면 조건문 사용
+            # if not obstacle_detected: 
             accumulated_depth += step_z
             
             target_tip_pos = phase3_base_tip + (axis_dir * accumulated_depth)
             target_back_pos = target_tip_pos - (axis_dir * needle_len)
             
-            current_speed = 0.5
-
             if accumulated_depth >= TARGET_INSERTION_DEPTH:
                 task_state = 3
                 print(">>> Finished.")
 
         elif task_state == 3:
             msg = "FINISHED"
-            status_color = (0, 0, 255)
-            current_speed = 0.5
 
         # === Stacked IK Solver ===
         data.site_xpos[viz_tip_tgt_id] = target_tip_pos
@@ -204,8 +242,6 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         J_p1 = jac_tip_full[:3] # Tip Pos
         e_p1 = err_tip * 50.0   # Tip Error Gain
         
-        # [중요] Error Clamping: 급격한 움직임 방지를 위한 안전장치
-        # 타겟이 멀리 있어도 속도를 강제로 제한함
         if np.linalg.norm(e_p1) > 1.0: e_p1 = e_p1 / np.linalg.norm(e_p1) * 1.0
             
         J_p1_pinv = np.linalg.pinv(J_p1, rcond=1e-4)
@@ -237,8 +273,10 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
                 renderer.update_scene(data, camera=cam)
                 frames.append(cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR))
             combined = np.hstack(frames)
+            
+            # 텍스트 오버레이
             cv2.putText(combined, msg, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
-            cv2.imshow("Smooth Trajectory", combined)
+            cv2.imshow("Smooth Trajectory & Ray Sensor", combined)
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'): break
@@ -248,7 +286,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
                 randomize_phantom_pos(model, data)
                 mujoco.mj_forward(model, data)
                 task_state = 1
-                traj_initialized = False # 궤적 초기화 플래그 리셋
+                traj_initialized = False
                 insertion_started = False
                 accumulated_depth = 0.0
 
@@ -256,5 +294,5 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         elapsed = time.time() - step_start
         if elapsed < model.opt.timestep:
             time.sleep(model.opt.timestep - elapsed)
-
+ 
 cv2.destroyAllWindows()

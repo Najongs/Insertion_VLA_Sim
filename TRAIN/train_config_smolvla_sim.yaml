@@ -1,0 +1,232 @@
+# SmolVLA Training Configuration (Following LeRobot Methodology)
+# ===============================================================
+# This config follows the exact training approach from lerobot_train.py
+# - Uses make_pre_post_processors with dataset.meta.stats for normalization
+# - Follows SmolVLA paper settings (batch=64, warmup=100, cosine LR 1e-4→2.5e-6)
+# - Uses LeRobot's NormalizerProcessorStep with MEAN_STD for state/action
+
+# Random seed for reproducibility
+seed: 1000
+
+# Output directory for checkpoints and logs
+output_dir: "outputs/train/smolvla_sim_lerobot_260126"
+
+# ============================================================
+# Normalization Configuration (LeRobot Methodology)
+# ============================================================
+normalization:
+  # Enable normalization using LeRobot's NormalizerProcessorStep
+  enable: true
+
+  # Path to precomputed dataset statistics
+  # CRITICAL: Run compute_dataset_stats.py first to generate this file!
+  # The stats will be used by make_pre_post_processors() to create NormalizerProcessorStep
+  stats_file: "/home/najo/NAS/VLA/Insertion_VLA_Sim/TRAIN/dataset_stats_sim.yaml"
+
+  # Normalization mode (set in policy config below)
+  # SmolVLA uses: VISUAL=IDENTITY, STATE=MEAN_STD, ACTION=MEAN_STD
+
+# ============================================================
+# Dataset Configuration
+# ============================================================
+dataset:
+  # Root directory containing HDF5 episode files
+  root_dir: "/home/najo/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_sim_6d_clean/collected_data_merged"
+
+  # Action prediction horizon (SmolVLA paper: n=50)
+  horizon: 50
+
+  # State representation
+  use_qpos: false        # Use joint positions (6 dims)
+  use_ee_pose: true      # Use end-effector pose (6 dims)
+  use_ee_pose_delta_as_action: false
+
+  # Target description (used in phase-based instruction generation)
+  # This provides context about what the "target point" is
+  # Examples: "hole 1", "hole 3", "entry point A", "the eye trocar"
+  # Will be inserted into instruction: "Insert the needle into {target_description}"
+  target_description: "the eye trocar"
+
+  # Task instruction (default fallback)
+  # Priority order for instruction generation:
+  # 1. If HDF5 has 'language_instruction' field → use that
+  # 2. If HDF5 has 'phase' field → generate from phase info (3-state task)
+  #    - Uses target_description above for context
+  #    - Phase 1: "Align the needle with {target_description}"
+  #    - Phase 2: "Insert the needle into {target_description}"
+  #    - Phase 3: "Hold the needle at the insertion depth in {target_description}"
+  #    - Multi-phase: "Insert the needle into {target_description} and hold"
+  # 3. Otherwise → use this default instruction
+  task_instruction: "Insert needle into eye trocar"
+
+  # Data Augmentation: Disabled (following paper for initial training)
+  augment: false
+  augment_brightness: 0.0
+  augment_contrast: 0.0
+  augment_saturation: 0.0
+  augment_hue: 0.0
+  augment_noise: 0.0
+
+# ============================================================
+# Policy Configuration (SmolVLA Paper Settings)
+# ============================================================
+policy:
+  # SmolVLA VLM backbone
+  vlm_model_name: "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
+
+  # Observation and action (Paper settings)
+  n_obs_steps: 1         # Single observation
+  chunk_size: 50         # Action chunk size (paper: n=50)
+  n_action_steps: 50
+
+  # Dimensions
+  max_state_dim: 32
+  max_action_dim: 32
+
+  # Flow matching parameters
+  num_steps: 10
+
+  # Image resolution (with aspect ratio padding)
+  resize_imgs_with_padding: [512, 512]
+
+  # Tokenizer
+  tokenizer_max_length: 48
+
+  # Training optimization (SmolVLA paper)
+  # - VLM frozen (only first 16 layers used)
+  # - Action expert trainable (~100M params)
+  freeze_vision_encoder: true
+  train_expert_only: true
+  train_state_proj: true
+
+  # VLM layers (paper: first 16 layers only)
+  num_vlm_layers: 16
+
+  # Normalization mapping (CRITICAL - matches SmolVLA paper)
+  # This is used by make_pre_post_processors to create NormalizerProcessorStep
+  # VISUAL: IDENTITY (no normalization for images)
+  # STATE: MEAN_STD (normalize state with mean/std from dataset.meta.stats)
+  # ACTION: MEAN_STD (normalize action with mean/std from dataset.meta.stats)
+  # Note: The actual normalization_mapping is set in code (FeatureType enum)
+
+# ============================================================
+# Training Configuration (SmolVLA Paper Settings)
+# ============================================================
+training:
+  # Training steps (Paper: 100k for simulation fine-tuning)
+  steps: 100000
+
+  # Batch size (Paper: 64 for fine-tuning)
+  # With 5 GPUs: effective batch = batch_size * num_gpus * grad_accum
+  # Current: 4 * 5 * 2 = 40 effective batch size
+  batch_size: 4  # Reduced to 4 to prevent system OOM
+
+  # Gradient Accumulation (adjust if VRAM limited)
+  gradient_accumulation_steps: 1
+
+  # DataLoader settings
+  num_workers: 0         # Use 0 for multi-GPU to avoid issues
+  pin_memory: false      # Disable to reduce system RAM usage
+  persistent_workers: false  # Disable worker persistence
+
+  # Logging and saving
+  log_freq: 100
+  save_freq: 5000       # Save every 10k steps
+
+  # Mixed Precision Training
+  # Paper uses bf16, but we use standard fp16 AMP for compatibility
+  use_amp: false         # Set to true if you want mixed precision
+
+# ============================================================
+# Optimizer Configuration (SmolVLA Paper Settings)
+# ============================================================
+optimizer:
+  # AdamW optimizer (Paper settings)
+  lr: 0.0001             # Peak learning rate: 1e-4
+  betas: [0.9, 0.95]     # Paper: β1=0.9, β2=0.95
+  weight_decay: 0.000001 # Paper: 1e-6
+  eps: 0.00000001        # 1e-8
+  grad_clip_norm: 10.0   # Paper: gradient clipping norm
+
+# ============================================================
+# Scheduler Configuration (SmolVLA Paper Settings)
+# ============================================================
+scheduler:
+  # Warmup steps (Paper: 100 steps)
+  num_warmup_steps: 100
+
+  # Cosine decay over total steps
+  num_decay_steps: 100000
+
+  # Learning rate schedule (Paper)
+  # Steps:    0 -----> 100 -----------------------> 100,000
+  # LR:    1e-4     1e-4   (cosine decay)            2.5e-6
+  #        └warmup─┘ └────────── decay ──────────────┘
+  peak_lr: 0.0001        # 1e-4 (paper)
+  decay_lr: 0.0000025    # 2.5e-6 (paper)
+
+# ============================================================
+# W&B Configuration (Optional)
+# ============================================================
+wandb:
+  enable: true
+  project: "smolvla-lerobot-training"
+  entity: null
+  name: null
+  tags:
+    - "smolvla"
+    - "lerobot"
+    - "mean-std-normalization"
+  notes: "SmolVLA training following LeRobot methodology with proper normalization"
+
+# ============================================================
+# Training Notes (LeRobot Methodology)
+# ============================================================
+#
+# This configuration follows the exact training approach from lerobot_train.py:
+#
+# 1. Dataset Statistics:
+#    - Compute with: python compute_dataset_stats.py --dataset_root /path --output dataset_stats_sim.yaml
+#    - Stats contain mean/std for state and action computed from actual dataset
+#
+# 2. Normalization:
+#    - Uses make_pre_post_processors(policy_cfg, dataset_stats=meta.stats)
+#    - Creates NormalizerProcessorStep automatically
+#    - Normalization mode: VISUAL=IDENTITY, STATE=MEAN_STD, ACTION=MEAN_STD
+#
+# 3. Training Loop:
+#    - batch = preprocessor(batch)  # Applies normalization via NormalizerProcessorStep
+#    - loss, loss_dict = policy.forward(batch)
+#    - output = postprocessor(output)  # Denormalizes predictions
+#
+# 4. SmolVLA Paper Settings Applied:
+#    - Optimizer: AdamW with β1=0.9, β2=0.95, weight_decay=1e-6
+#    - Scheduler: 100-step warmup, cosine decay 1e-4 → 2.5e-6
+#    - Batch size: 64 (fine-tuning)
+#    - Steps: 100,000 (simulation fine-tuning)
+#    - Action chunks: n=50 (flow matching)
+#    - VLM: Frozen (first 16 layers only)
+#    - Expert: Trainable (~100M params)
+#
+# 5. Differences from Custom Normalization:
+#    BEFORE (Custom):
+#      - Used custom Normalizer class
+#      - Manual normalization: batch = normalize_batch(batch, normalizer, device)
+#
+#    NOW (LeRobot):
+#      - Uses make_pre_post_processors with dataset.meta.stats
+#      - Automatic normalization: batch = preprocessor(batch)
+#      - NormalizerProcessorStep handles normalization internally
+#
+# 6. Expected Behavior:
+#    - Dataset provides meta.stats (mean, std, min, max for state/action)
+#    - Preprocessor normalizes: normalized = (value - mean) / std
+#    - Policy trains on normalized values
+#    - Postprocessor denormalizes: value = normalized * std + mean
+#
+# 7. Why This Matters:
+#    - Proper normalization improves training stability
+#    - Faster convergence
+#    - Better generalization
+#    - Matches pretrained model's expected input distribution
+#
