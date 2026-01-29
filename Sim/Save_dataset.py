@@ -10,6 +10,7 @@ import datetime
 import threading
 import pathlib
 from collections import deque
+from transformation_utils import get_transform
 
 try:
     from tqdm import tqdm
@@ -145,17 +146,36 @@ def main():
 
     recorder = SimRecorder(SAVE_DIR)
     home_pose = np.array([0.5236, -0.3491, 0.3491, 0.0000, 0.5236, 1.0472]) # (30, -20, 20, 0, 30, 60)
-    current_speed = 0.5 
+    current_speed = 0.5
+
+    # Load transformation matrices (sim → real robot coordinates)
+    try:
+        transform = get_transform()
+        print("✅ Transformation loaded - Data will be saved in real robot coordinates")
+    except FileNotFoundError:
+        print("⚠️  WARNING: Transformation matrices not found!")
+        print("   Run: python collect_calibration_data.py")
+        print("   Then: python compute_transformation.py")
+        print("   Data will be saved in simulation coordinates (NOT recommended)")
+        transform = None
 
     def get_ee_pose_6d_scaled():
-        pos = data.site_xpos[tip_id].copy() * 1000.0 
+        """Get EE pose in simulation frame"""
+        pos = data.site_xpos[tip_id].copy() * 1000.0
         mat = data.site_xmat[tip_id].reshape(3, 3)
         sy = np.sqrt(mat[0,0]**2 + mat[1,0]**2)
         if sy > 1e-6:
             r, p, y = np.arctan2(mat[2,1], mat[2,2]), np.arctan2(-mat[2,0], sy), np.arctan2(mat[1,0], mat[0,0])
         else:
             r, p, y = np.arctan2(-mat[1,2], mat[1,1]), np.arctan2(-mat[2,0], sy), 0
-        return np.concatenate([pos, [r, p, y]])
+
+        sim_pose = np.concatenate([pos, [r, p, y]])
+
+        # Transform to real robot coordinates if available
+        if transform is not None:
+            return transform.transform_pose(sim_pose)
+        else:
+            return sim_pose
 
     print(f"🚀 Starting Headless Collection...")
     pbar = tqdm(total=MAX_EPISODES, desc="Collecting", unit="ep")
