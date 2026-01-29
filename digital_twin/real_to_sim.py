@@ -8,6 +8,8 @@ Architecture:
 - Simulation mirror runs in main thread (MuJoCo viewer)
 - State synchronization via thread-safe queue
 - Gamepad control of real robot → visualization in simulation
+
+python /home/irom/NAS/VLA/Insertion_VLA_Sim/digital_twin/real_to_sim.py
 """
 
 import os
@@ -31,8 +33,9 @@ import pygame
 # === Configuration ===
 ROBOT_ADDRESS = "192.168.0.100"
 MODEL_PATH = "../Sim/meca_scene22.xml"
-HOME_JOINTS = (30, -20, 20, 0, 30, 60)
+HOME_JOINTS = (0, 0, 0, 0, 0, 0) # (30, -20, 20, 0, 30, 60)
 CONTROL_FREQUENCY = 15  # Hz
+OUTPUT_DIR = pathlib.Path(__file__).resolve().parent / "recordings" / "real_to_sim"
 
 # Gamepad settings (same as Robot_action.py)
 SCALE_POS = 0.8
@@ -130,7 +133,7 @@ class GamepadController:
 
     def get_action(self):
         if not self.joystick:
-            return np.zeros(6), False, False, False
+            return np.zeros(6), False, False, False, False
 
         pygame.event.pump()
 
@@ -226,10 +229,12 @@ class GamepadController:
             self.current_action = target_action
 
         # Buttons
+        btn_rec = self.joystick.get_button(1)  # B
+        btn_disc = self.joystick.get_button(0) # A
         btn_home = self.joystick.get_button(3)  # Y
         btn_exit = self.joystick.get_button(7) if self.joystick.get_numbuttons() > 7 else False  # START
 
-        return action, btn_home, btn_exit
+        return action, btn_rec, btn_disc, btn_home, btn_exit
 
 # ============================================================
 # Camera Manager (from Robot_action.py)
@@ -291,6 +296,180 @@ class OAKCameraManager:
         self.stack.close()
 
 # ============================================================
+# Data Recorder (Real/Sim)
+# ============================================================
+class DataRecorder:
+    def __init__(self, output_dir):
+        self.out = pathlib.Path(output_dir)
+        self.out.mkdir(parents=True, exist_ok=True)
+        self.recording = False
+        self.real_buf = []
+        self.sim_buf = []
+        self.step = 0
+
+    def start(self):
+        self.real_buf = []
+        self.sim_buf = []
+        self.recording = True
+        self.step = 0
+        logger.info("🔴 Recording started")
+
+    def discard(self):
+        self.real_buf = []
+        self.sim_buf = []
+        self.recording = False
+        logger.warning("🗑️ Recording discarded")
+
+    def add(self, real_ee, real_q, real_act, sim_ee, sim_q, sim_act, ts):
+        if not self.recording:
+            return
+        self.real_buf.append({"ee": real_ee, "q": real_q, "act": real_act, "ts": ts})
+        self.sim_buf.append({"ee": sim_ee, "q": sim_q, "act": sim_act, "ts": ts})
+        self.step += 1
+
+    def save(self):
+        if not self.recording or not self.real_buf:
+            self.recording = False
+            return
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        real_path = self.out / f"real_episode_{timestamp}.npz"
+        sim_path = self.out / f"sim_episode_{timestamp}.npz"
+
+        def pack(buf):
+            ee = np.stack([x["ee"] for x in buf]).astype(np.float32)
+            q = np.stack([x["q"] for x in buf]).astype(np.float32)
+            act = np.stack([x["act"] for x in buf]).astype(np.float32)
+            ts = np.stack([x["ts"] for x in buf]).astype(np.float32)
+            return ee, q, act, ts
+
+        real_ee, real_q, real_act, real_ts = pack(self.real_buf)
+        sim_ee, sim_q, sim_act, sim_ts = pack(self.sim_buf)
+
+        np.savez_compressed(real_path, ee_pose=real_ee, qpos=real_q, action=real_act, timestamp=real_ts)
+        np.savez_compressed(sim_path, ee_pose=sim_ee, qpos=sim_q, action=sim_act, timestamp=sim_ts)
+
+        logger.info(f"✅ Saved real data: {real_path}")
+        logger.info(f"✅ Saved sim data: {sim_path}")
+
+        self.recording = False
+        self.real_buf = []
+        self.sim_buf = []
+
+def _pose_deg_to_rad(pose_deg):
+    pose = np.array(pose_deg, dtype=np.float32)
+    pose[3:6] = np.deg2rad(pose[3:6])
+    return pose
+
+def _quat_wxyz_to_euler_xyz(quat):
+    w, x, y, z = quat
+    t0 = 2.0 * (w * x + y * z)
+    t1 = 1.0 - 2.0 * (x * x + y * y)
+    roll = np.arctan2(t0, t1)
+
+    t2 = 2.0 * (w * y - z * x)
+    t2 = np.clip(t2, -1.0, 1.0)
+    pitch = np.arcsin(t2)
+
+    t3 = 2.0 * (w * z + x * y)
+    t4 = 1.0 - 2.0 * (y * y + z * z)
+    yaw = np.arctan2(t3, t4)
+    return np.array([roll, pitch, yaw], dtype=np.float64)
+
+def _action_deg_to_rad(action):
+    act = np.array(action, dtype=np.float32)
+    act[3:6] = np.deg2rad(act[3:6])
+    return act
+
+def _get_dh_matrix(a, d, alpha_deg, theta_deg):
+    alpha = np.deg2rad(alpha_deg)
+    theta = np.deg2rad(theta_deg)
+    ca = np.cos(alpha)
+    sa = np.sin(alpha)
+    ct = np.cos(theta)
+    st = np.sin(theta)
+    return np.array(
+        [
+            [ct, -st * ca, st * sa, a * ct],
+            [st, ct * ca, -ct * sa, a * st],
+            [0.0, sa, ca, d],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+def _fk_ee_mm_rad_from_qpos_deg(qpos_deg):
+    dh_params = [
+        {"alpha": -90, "a": 0.0,   "d": 0.135, "theta_offset": 0},
+        {"alpha": 0,   "a": 0.135, "d": 0.0,   "theta_offset": -90},
+        {"alpha": -90, "a": 0.038, "d": 0.0,   "theta_offset": 0},
+        {"alpha": 90,  "a": 0.0,   "d": 0.120, "theta_offset": 0},
+        {"alpha": -90, "a": 0.0,   "d": 0.0,   "theta_offset": 0},
+        {"alpha": 0,   "a": 0.0,   "d": 0.070, "theta_offset": 0},
+    ]
+
+    # Base correction: Rx(180) then Rz(90)
+    rx = np.deg2rad(180.0)
+    rz = np.deg2rad(90.0)
+    cx, sx = np.cos(rx), np.sin(rx)
+    cz, sz = np.cos(rz), np.sin(rz)
+    rot_x_180 = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float64)
+    rot_z_90 = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float64)
+    r_base = rot_z_90 @ rot_x_180
+    t_base = np.eye(4, dtype=np.float64)
+    t_base[:3, :3] = r_base
+
+    t = t_base
+    for i in range(6):
+        params = dh_params[i]
+        theta = float(qpos_deg[i]) + params["theta_offset"]
+        t = t @ _get_dh_matrix(params["a"], params["d"], params["alpha"], theta)
+
+    pos_m = t[:3, 3]
+    quat = np.zeros(4, dtype=np.float64)
+    mujoco.mju_mat2Quat(quat, t[:3, :3].reshape(9))
+    euler = _quat_wxyz_to_euler_xyz(quat)
+    pos_mm = pos_m * 1000.0
+    pos_mm = np.array([pos_mm[1], pos_mm[0], -pos_mm[2]], dtype=np.float64)
+    rx, ry, rz = euler[0], euler[1], euler[2]
+    rx = -rx
+    rz = -rz
+    return np.array([pos_mm[0], pos_mm[1], pos_mm[2], rx, ry, rz], dtype=np.float32)
+    
+
+def _body_pose_mm_rad(data, body_id, base_offset=None, base_mat=None):
+    if body_id < 0:
+        return np.zeros(6, dtype=np.float32)
+    pos_m = data.xpos[body_id].copy()
+    if base_offset is not None:
+        pos_m = pos_m - base_offset
+    mat = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+    if base_mat is not None:
+        # Remove base rotation: R_rel = R_base^T * R_link
+        mat = base_mat.T @ mat
+    mat = mat.reshape(9)
+    quat = np.zeros(4, dtype=np.float64)
+    mujoco.mju_mat2Quat(quat, mat)
+    euler = _quat_wxyz_to_euler_xyz(quat)
+    pos_mm = pos_m * 1000.0
+    return np.array([pos_mm[0], pos_mm[1], pos_mm[2], euler[0], euler[1], euler[2]], dtype=np.float32)
+
+def _body_pose_mm_rad_base_relative(data, body_id, base_geom_id):
+    if body_id < 0 or base_geom_id < 0:
+        return np.zeros(6, dtype=np.float32)
+    p_link = data.xpos[body_id].copy()
+    p_base = data.geom_xpos[base_geom_id].copy()
+    r_link = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+    r_base = np.asarray(data.geom_xmat[base_geom_id], dtype=np.float64).reshape(3, 3)
+    p_rel = r_base.T @ (p_link - p_base)
+    r_rel = r_base.T @ r_link
+    quat = np.zeros(4, dtype=np.float64)
+    mujoco.mju_mat2Quat(quat, r_rel.reshape(9))
+    euler = _quat_wxyz_to_euler_xyz(quat)
+    pos_mm = p_rel * 1000.0
+    return np.array([pos_mm[0], pos_mm[1], pos_mm[2], euler[0], euler[1], euler[2]], dtype=np.float32)
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -310,9 +489,25 @@ def main():
         tip_id = -1
         back_id = -1
 
+    # Link6 body for EE position (simulation)
+    try:
+        link6_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "6_Link")
+    except:
+        logger.warning("⚠️ Link6 body not found")
+        link6_id = -1
+    # Base link geom for position reference
+    try:
+        base_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "base_link")
+    except:
+        logger.warning("⚠️ base_link geom not found")
+        base_geom_id = -1
+    base_offset = None
+    base_mat = None
+
     # Initialize gamepad and cameras
     gamepad = GamepadController()
     camera_mgr = OAKCameraManager()
+    recorder = DataRecorder(OUTPUT_DIR)
 
     try:
         # Connect to robot
@@ -337,6 +532,18 @@ def main():
         sampler = RtSampler(robot, rate_hz=100)
         sampler.start()
 
+        # Home pose comparison (real vs sim DH FK)
+        try:
+            time.sleep(0.2)
+            robot_q, robot_p = sampler.get_latest_data()
+            sim_q = np.array(robot_q, dtype=np.float32)
+            sim_ee = _fk_ee_mm_rad_from_qpos_deg(sim_q)
+            real_ee = _pose_deg_to_rad(robot_p)
+            logger.info(f"[HOME] real EE (mm,rad): {real_ee}")
+            logger.info(f"[HOME] sim  EE (mm,rad): {sim_ee}")
+        except Exception as e:
+            logger.warning(f"[HOME] compare failed: {e}")
+
         # Initialize cameras
         logger.info("📷 Initializing cameras...")
         num_cameras = camera_mgr.initialize_cameras()
@@ -347,6 +554,7 @@ def main():
 
         logger.info(colored("\n=== CONTROLS ===", "cyan"))
         logger.info(" [Gamepad]    Control real robot (see Robot_action.py for details)")
+        logger.info(" [B/A]        Rec(Start/Save) / Discard")
         logger.info(" [Y Button]   Go to home position")
         logger.info(" [START]      Exit program")
         logger.info(" Real robot movements will be mirrored in simulation!\n")
@@ -354,12 +562,17 @@ def main():
         # Set initial simulation pose
         data.qpos[:6] = np.deg2rad(HOME_JOINTS)
         mujoco.mj_forward(model, data)
+        if base_geom_id >= 0:
+            base_offset = data.geom_xpos[base_geom_id].copy()
+            base_mat = np.asarray(data.geom_xmat[base_geom_id], dtype=np.float64).reshape(3, 3)
+            logger.info(f"📍 Base offset applied (sim): {base_offset}")
 
         # Launch viewer
         with mujoco.viewer.launch_passive(model, data) as viewer:
             step_count = 0
             last_control_time = time.time()
             control_dt = 1.0 / CONTROL_FREQUENCY
+            last_action = np.zeros(6, dtype=np.float32)
 
             while viewer.is_running():
                 step_start = time.time()
@@ -391,7 +604,8 @@ def main():
                 # Control robot with gamepad
                 current_time = time.time()
                 if current_time - last_control_time >= control_dt:
-                    action, btn_home, btn_exit = gamepad.get_action()
+                    action, btn_rec, btn_disc, btn_home, btn_exit = gamepad.get_action()
+                    last_action = action.copy()
 
                     if btn_exit:
                         logger.info(colored("🛑 Exit button pressed", "red"))
@@ -405,6 +619,18 @@ def main():
                         except Exception as e:
                             logger.error(f"Home failed: {e}")
 
+                    if btn_rec:
+                        if not recorder.recording:
+                            recorder.start()
+                            time.sleep(0.3)
+                        else:
+                            recorder.save()
+                            time.sleep(0.3)
+
+                    if btn_disc and recorder.recording:
+                        recorder.discard()
+                        time.sleep(0.3)
+
                     # Send movement command to robot
                     if np.any(np.abs(action) > 0.001):
                         try:
@@ -413,6 +639,18 @@ def main():
                             logger.debug(f"Move command failed: {e}")
 
                     last_control_time = current_time
+
+                # Record data (real/sim)
+                if recorder.recording:
+                    real_ee = _pose_deg_to_rad(robot_p)
+                    real_q = np.array(robot_q, dtype=np.float32)
+                    real_act = _action_deg_to_rad(last_action)
+
+                    sim_q = np.rad2deg(data.qpos[:6].copy()).astype(np.float32)
+                    sim_ee = _fk_ee_mm_rad_from_qpos_deg(sim_q)
+                    sim_act = real_act.copy()
+
+                    recorder.add(real_ee, real_q, real_act, sim_ee, sim_q, sim_act, time.time())
 
                 # Display camera feeds
                 if num_cameras > 0 and step_count % 2 == 0:

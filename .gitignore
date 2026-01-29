@@ -19,6 +19,7 @@ random_backgrounds/
 output/
 outputs/
 *.pt
+*.npz
 
 # 학습 로그 관련
 wandb/
