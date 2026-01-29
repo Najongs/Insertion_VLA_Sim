@@ -18,10 +18,12 @@ import numpy as np
 import queue
 from termcolor import colored
 import cv2
+import contextlib
 
 import mujoco
 import mujoco.viewer
 import mecademicpy.robot as mdr
+import depthai as dai
 
 # === Configuration ===
 ROBOT_ADDRESS = "192.168.0.100"
@@ -185,6 +187,65 @@ class SimulationPublisher:
         return state
 
 # ============================================================
+# Camera Manager (from Robot_action.py)
+# ============================================================
+class OAKCameraManager:
+    def __init__(self, width=640, height=480):
+        self.width, self.height = width, height
+        self.stack = contextlib.ExitStack()
+        self.queues = []
+        self.last_frames = {}
+        self.camera_ids = []
+        self.num_cameras = 0
+
+    def initialize_cameras(self):
+        infos = dai.Device.getAllAvailableDevices()
+        if not infos:
+            logger.warning("⚠️ No OAK cameras found")
+            self.num_cameras = 0
+            return 0
+
+        self.camera_ids = []
+        for info in infos:
+            p = dai.Pipeline()
+            c = p.create(dai.node.ColorCamera)
+            c.setBoardSocket(dai.CameraBoardSocket.CAM_A)
+            c.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+            c.setPreviewSize(self.width, self.height)
+            c.setInterleaved(False)
+
+            # Manual focus for camera ID starting with "19"
+            camera_id = info.getMxId()
+            self.camera_ids.append(camera_id)
+            if camera_id.startswith("19"):
+                c.initialControl.setManualFocus(101)
+                logger.info(f"📷 Camera {camera_id}: Manual focus set to 101")
+            else:
+                logger.info(f"📷 Camera {camera_id}: Auto focus")
+
+            out = p.create(dai.node.XLinkOut)
+            out.setStreamName("rgb")
+            c.preview.link(out.input)
+            d = self.stack.enter_context(dai.Device(p, info, dai.UsbSpeed.SUPER))
+            self.queues.append(d.getOutputQueue("rgb", 4, False))
+
+        self.num_cameras = len(self.queues)
+        return self.num_cameras
+
+    def get_frames(self):
+        frames = {}
+        for i, q in enumerate(self.queues):
+            f = q.tryGet()
+            if f:
+                self.last_frames[i] = f.getCvFrame()
+            if i in self.last_frames:
+                frames[f"camera{i+1}"] = self.last_frames[i]
+        return frames
+
+    def close(self):
+        self.stack.close()
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -197,6 +258,15 @@ def main():
 
     # Initialize simulation publisher
     sim_publisher = SimulationPublisher(model, data)
+
+    # Initialize cameras
+    camera_mgr = OAKCameraManager()
+    logger.info("📷 Initializing cameras...")
+    num_cameras = camera_mgr.initialize_cameras()
+    if num_cameras > 0:
+        logger.info(f"✅ {num_cameras} camera(s) initialized")
+    else:
+        logger.warning("⚠️ No cameras available")
 
     # Create communication queues
     command_queue = queue.Queue(maxsize=1)  # Sim → Robot
@@ -271,6 +341,53 @@ def main():
                 except queue.Empty:
                     pass
 
+            # Display camera feeds
+            if num_cameras > 0 and step_count % 2 == 0:
+                frames = camera_mgr.get_frames()
+                img_list = []
+                for i in range(num_cameras):
+                    key = f"camera{i+1}"
+                    if key in frames:
+                        img = frames[key].copy()
+                    else:
+                        img = np.zeros((camera_mgr.height, camera_mgr.width, 3), dtype=np.uint8)
+                    cv2.putText(img, key, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                               0.7, (255, 255, 0), 2)
+                    img_list.append(img)
+
+                if img_list:
+                    try:
+                        # Combine horizontally
+                        if len(img_list) > 1:
+                            heights = [img.shape[0] for img in img_list]
+                            if len(set(heights)) > 1:
+                                target_h = min(heights)
+                                resized = []
+                                for img in img_list:
+                                    if img.shape[0] != target_h:
+                                        aspect = img.shape[1] / img.shape[0]
+                                        target_w = int(target_h * aspect)
+                                        resized.append(cv2.resize(img, (target_w, target_h)))
+                                    else:
+                                        resized.append(img)
+                                combined = np.hstack(resized)
+                            else:
+                                combined = np.hstack(img_list)
+                        else:
+                            combined = img_list[0]
+
+                        cv2.putText(combined, "Sim-to-Real Cameras",
+                                   (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                                   (0, 255, 0), 2)
+
+                        cv2.imshow("Sim-to-Real Cameras", combined)
+
+                        if cv2.waitKey(1) == ord('q'):
+                            break
+
+                    except Exception as e:
+                        logger.debug(f"Display error: {e}")
+
             # Display status every 30 steps
             if step_count % 30 == 0:
                 sim_qpos = np.rad2deg(data.qpos[:6])
@@ -285,6 +402,10 @@ def main():
                 time.sleep(model.opt.timestep - elapsed)
 
     # Cleanup
+    if "camera_mgr" in locals():
+        camera_mgr.close()
+    cv2.destroyAllWindows()
+
     robot_controller.stop()
     robot_controller.join(timeout=5.0)
     logger.info("\n✅ Shutdown complete")

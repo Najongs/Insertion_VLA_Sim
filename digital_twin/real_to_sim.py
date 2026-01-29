@@ -239,13 +239,18 @@ class OAKCameraManager:
         self.width, self.height = width, height
         self.stack = contextlib.ExitStack()
         self.queues = []
+        self.last_frames = {}
+        self.camera_ids = []
+        self.num_cameras = 0
 
     def initialize_cameras(self):
         infos = dai.Device.getAllAvailableDevices()
         if not infos:
             logger.warning("⚠️ No OAK cameras found")
+            self.num_cameras = 0
             return 0
 
+        self.camera_ids = []
         for info in infos:
             p = dai.Pipeline()
             c = p.create(dai.node.ColorCamera)
@@ -256,8 +261,12 @@ class OAKCameraManager:
 
             # Manual focus for camera ID starting with "19"
             camera_id = info.getMxId()
+            self.camera_ids.append(camera_id)
             if camera_id.startswith("19"):
                 c.initialControl.setManualFocus(101)
+                logger.info(f"📷 Camera {camera_id}: Manual focus set to 101")
+            else:
+                logger.info(f"📷 Camera {camera_id}: Auto focus")
 
             out = p.create(dai.node.XLinkOut)
             out.setStreamName("rgb")
@@ -265,14 +274,17 @@ class OAKCameraManager:
             d = self.stack.enter_context(dai.Device(p, info, dai.UsbSpeed.SUPER))
             self.queues.append(d.getOutputQueue("rgb", 4, False))
 
-        return len(self.queues)
+        self.num_cameras = len(self.queues)
+        return self.num_cameras
 
     def get_frames(self):
         frames = {}
         for i, q in enumerate(self.queues):
             f = q.tryGet()
             if f:
-                frames[f"camera{i+1}"] = f.getCvFrame()
+                self.last_frames[i] = f.getCvFrame()
+            if i in self.last_frames:
+                frames[f"camera{i+1}"] = self.last_frames[i]
         return frames
 
     def close(self):
@@ -352,6 +364,18 @@ def main():
             while viewer.is_running():
                 step_start = time.time()
 
+                # 0. Safety Check (auto-recover on robot error)
+                try:
+                    if robot.GetStatusRobot().error_status:
+                        logger.warning("⚠️ Robot error detected. Auto-resetting...")
+                        robot.ResetError()
+                        time.sleep(0.1)
+                        robot.ResumeMotion()
+                        time.sleep(0.5)
+                        continue
+                except Exception as e:
+                    logger.debug(f"Safety check failed: {e}")
+
                 # Get real robot state
                 robot_q, robot_p = sampler.get_latest_data()
 
@@ -391,11 +415,14 @@ def main():
                     last_control_time = current_time
 
                 # Display camera feeds
-                if frames and step_count % 2 == 0:
-                    sorted_keys = sorted(frames.keys())
+                if num_cameras > 0 and step_count % 2 == 0:
                     img_list = []
-                    for key in sorted_keys:
-                        img = frames[key].copy()
+                    for i in range(num_cameras):
+                        key = f"camera{i+1}"
+                        if key in frames:
+                            img = frames[key].copy()
+                        else:
+                            img = np.zeros((camera_mgr.height, camera_mgr.width, 3), dtype=np.uint8)
                         cv2.putText(img, key, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                                    0.7, (255, 255, 0), 2)
                         img_list.append(img)

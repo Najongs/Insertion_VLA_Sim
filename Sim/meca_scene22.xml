@@ -102,27 +102,25 @@
       <geom type="mesh" material="mat_robot_metal" mesh="1_Link"/>
       <body name="2_Link" pos="0 0 0.054" quat="0.499998 0.5 0.500002 0.5">
         <inertial pos="-0.011581 0.060433 0.025598" quat="0.707107 0 0 0.707107" mass="0.0014997" diaginertia="4.1011e-08 4.1007e-08 4.3707e-09"/>
-        <joint name="2" pos="0 0 0" axis="0 0 1" range="-1.2217 1.5708" actuatorfrcrange="-10 10"/>
+        <joint name="2" pos="0 0 0" axis="0 0 -1" range="-1.2217 1.5708" actuatorfrcrange="-10 10"/>
         <geom type="mesh" material="mat_robot_metal" mesh="2_Link"/>
         <body name="3_Link" pos="0 0.135 0">
           <inertial pos="0.00863474 0.0130793 0.000472372" quat="0.610208 0.352554 -0.60274 0.37424" mass="0.369858" diaginertia="0.000449876 0.000401291 0.000237968"/>
-          <joint name="3" pos="0 0 0" axis="0 0 1" range="-2.3562 1.2217" actuatorfrcrange="-10 10"/>
+          <joint name="3" pos="0 0 0" axis="0 0 -1" range="-2.3562 1.2217" actuatorfrcrange="-10 10"/>
           <geom type="mesh" material="mat_robot_metal" mesh="3_Link"/>
           <body name="4_Link" pos="0.0609986 0.0380001 0" quat="0.707107 0 -0.707107 0">
             <inertial pos="0.0268017 3.80505e-06 -0.0386581" quat="0.5 0.5 0.5 0.5" mass="5.45514e-05" diaginertia="4.37621e-10 4.37369e-10 6.1925e-11"/>
-            <joint name="4" pos="0 0 0" axis="0 0 1" range="-2.9671 2.9671" actuatorfrcrange="-10 10"/>
+            <joint name="4" pos="0 0 0" axis="0 0 -1" range="-2.9671 2.9671" actuatorfrcrange="-10 10"/>
             <geom type="mesh" material="mat_robot_metal" mesh="4_Link"/>
             <body name="5_Link" pos="0 0 -0.059" quat="0.707107 0 0.707107 0">
               <inertial pos="0.020511 2.54707e-06 0.000506959" quat="0.485292 0.514377 0.513772 0.485742" mass="0.164362" diaginertia="0.0001195 0.000115999 5.49467e-05"/>
-              <joint name="5" pos="0 0 0" axis="0 0 1" range="-2.0071 2.0071" actuatorfrcrange="-10 10"/>
+              <joint name="5" pos="0 0 0" axis="0 0 -1" range="-2.0071 2.0071" actuatorfrcrange="-10 10"/>
               <geom type="mesh" material="mat_robot_metal" mesh="5_Link"/>
-              <body name="6_Link" pos="0.059 0 0" quat="0.707107 0 -0.707107 0">
+              <body name="6_Link" pos="0.059 0 0" quat="0.6123724 -0.3535534 -0.6123724 0.3535534">
                 <inertial pos="0.103356 -0.0319911 -8.07016e-05" quat="0.107636 0.682533 -0.103734 0.715403" mass="0.203182" diaginertia="0.00103808 0.00103803 0.00100011"/>
-                <joint name="6" pos="0 0 0" axis="0 0 1" range="-6.2832 6.2832" actuatorfrcrange="-10 10"/>
+                <joint name="6" pos="0 0 0" axis="0 0 -1" range="-6.2832 6.2832" actuatorfrcrange="-10 10"/>
                 <geom type="mesh" material="mat_robot_metal" mesh="6_Link"/>
-                
                 <geom pos="0.105 -0.0325 0" quat="1.34924e-11 -3.67321e-06 1 -3.67321e-06" type="mesh" material="mat_white_plastic" mesh="260107_Total_assembly_simplified" contype="0" conaffinity="0"/>
-                
                 <site name="needle_tip" pos="0 0 -0.1875" size="0.0001" rgba="1 0 0 0"/>
                 <site name="needle_back" pos="0 0 -0.1275" size="0.0001" rgba="1 0 0 0"/>
                 <camera name="tool_camera" mode="fixed" pos="0 0.05 -0.065" fovy="35" euler="-0.45 0 0"/>
