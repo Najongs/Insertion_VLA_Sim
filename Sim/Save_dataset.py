@@ -18,7 +18,7 @@ except ImportError:
     tqdm = lambda x, total=None: x
 
 # === Configuration ===
-MODEL_PATH = "meca_scene22.xml"
+MODEL_PATH = "meca_add.xml"
 SAVE_DIR = "collected_data_sim_clean"
 MAX_EPISODES = 1   
 IMG_WIDTH = 640
@@ -240,7 +240,14 @@ def main():
             # --- 2. IK Solver ---
             err_tip, err_back = target_tip_pos - curr_tip, target_back_pos - curr_back
             tip_rot_mat = data.site_xmat[tip_id].reshape(3, 3)
-            current_side_vec = tip_rot_mat @ np.array([1, 0, 0])
+            
+            # 270도 오프셋
+            offset_angle = np.deg2rad(180+30)
+            offset_local_vec = np.array([np.cos(offset_angle), np.sin(offset_angle), 0])
+            current_side_vec = tip_rot_mat @ offset_local_vec
+            
+            # current_side_vec = tip_rot_mat @ np.array([1, 0, 0])
+            
             needle_axis_curr = (curr_tip - curr_back) / (np.linalg.norm(curr_tip - curr_back) + 1e-10)
             target_side_vec = np.cross(needle_axis_curr, np.array([0, 0, 1]))
             target_side_vec = target_side_vec / np.linalg.norm(target_side_vec) if np.linalg.norm(target_side_vec) > 1e-3 else np.array([1, 0, 0])

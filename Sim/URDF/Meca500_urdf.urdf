@@ -203,5 +203,5 @@
       <axis xyz="0 0 1" />
       <limit lower="-6.2832" upper="6.2832" effort="10.0" velocity="8.7266" />
     </joint>
-    </xacro:macro>
+  </xacro:macro>
 </robot>
