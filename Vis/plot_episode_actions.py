@@ -9,11 +9,11 @@ Units:
 
 Usage:
 python plot_episode_actions.py \
-    --episode /home/najo/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_sim_6d_clean/collected_data_merged/worker0_episode_20260129_190039.h5 \
+    --episode /home/irom/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_with_real/episode_002_20260201_055831_261443.h5 \
     --output_dir ./outputs/action_plots
 
 python plot_episode_actions.py \
-    --episode /home/najo/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_sim_clean/episode_20260129_214849.h5 \
+    --episode /home/irom/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_sim_clean/episode_20260201_055306.h5 \
     --output_dir ./outputs/action_plots
 """
 
@@ -168,6 +168,57 @@ def plot_data_6d(data, data_type, timestamps=None, output_dir=None, episode_name
     plt.close()
 
 
+def plot_data_3d(data, data_type, output_dir=None, episode_name=""):
+    if data is None:
+        print(f"Skipping plot for {data_type} (No data found)")
+        return
+
+    num_frames = len(data)
+    data_dim = data.shape[1]
+    x_values = np.arange(num_frames)
+    x_label = 'Frame Index'
+
+    if data_type == "delta_ee_pos":
+        dim_labels = ['dX (mm)', 'dY (mm)', 'dZ (mm)']
+        title_color = 'purple'
+        main_title = "Delta EE Position (mm)"
+    else:
+        dim_labels = [f'Dim {i}' for i in range(3)]
+        title_color = 'black'
+        main_title = f"{data_type} Values"
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    fig.suptitle(f'{main_title} - {episode_name}', fontsize=16, color=title_color, fontweight='bold')
+
+    for i in range(min(data_dim, 3)):
+        ax = axes[i]
+        ax.plot(x_values, data[:, i], linewidth=1.5, color=title_color)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(dim_labels[i])
+        ax.set_title(dim_labels[i])
+        ax.grid(True, alpha=0.3)
+
+        mean_val = data[:, i].mean()
+        min_val = data[:, i].min()
+        max_val = data[:, i].max()
+        stats_text = f"Mean: {mean_val:.2f}\nRange: [{min_val:.2f}, {max_val:.2f}]"
+        ax.legend([stats_text], loc='upper right', fontsize='small', framealpha=0.8)
+
+    plt.tight_layout()
+
+    if output_dir:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        filename = f"{data_type}_{episode_name}.png"
+        save_path = output_path / filename
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved {data_type} plot to: {save_path}")
+    else:
+        plt.show()
+
+    plt.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot with correct units")
     parser.add_argument("--episode", type=str, required=True, help="Path/filename of HDF5")
@@ -186,6 +237,9 @@ def main():
         plot_data_6d(qpos, "qpos", timestamps, args.output_dir, episode_name)
         plot_data_6d(ee_pose, "ee_pose", timestamps, args.output_dir, episode_name)
         plot_data_6d(action, "action", timestamps, args.output_dir, episode_name)
+        if ee_pose is not None and ee_pose.shape[1] >= 6:
+            delta_ee_pose = np.diff(ee_pose[:, :6], axis=0, prepend=ee_pose[:1, :6])
+            plot_data_6d(delta_ee_pose, "action", timestamps, args.output_dir, f"{episode_name}_delta_ee_pose")
 
         print("\nAll plots generated successfully!")
 

@@ -11,8 +11,8 @@ Units (from real_to_sim.py):
 Usage:
 
 python plot_episode_actions_npz.py \
-    --real /home/irom/NAS/VLA/Insertion_VLA_Sim/digital_twin/recordings/real_to_sim/real_episode_20260130_031527.npz \
-    --sim /home/irom/NAS/VLA/Insertion_VLA_Sim/digital_twin/recordings/real_to_sim/sim_episode_20260130_031527.npz \
+    --real /home/irom/NAS/VLA/Insertion_VLA_Sim/digital_twin/recordings/real_to_sim/real_episode_20260201_043951.npz \
+    --sim /home/irom/NAS/VLA/Insertion_VLA_Sim/digital_twin/recordings/real_to_sim/sim_episode_20260201_043951.npz \
     --overlay \
     --output_dir /home/irom/NAS/VLA/Insertion_VLA_Sim/Vis/outputs/action_plots
     

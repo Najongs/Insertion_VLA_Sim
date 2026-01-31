@@ -24,6 +24,7 @@
     <mesh name="Trocar_gripper" file="STL/Trocar_gripper.STL"/>
     <mesh name="Eye_phantom" file="STL/Eye_phantom.STL"/>
     <mesh name="Eye_trocar" file="STL/Eye_trocar.STL"/>
+
     <texture name="tex_noise_plastic" type="2d" file="textures/wax.png" rgb1="1 1 1" rgb2="0.9 0.9 0.9"/> 
     <texture name="tex_scratch_metal" type="2d" file="textures/metal.png"/>
     <texture name="tex_white_plastic" type="2d" file="textures/plastic.png"/> 
@@ -79,7 +80,7 @@
               <inertial pos="0.020511 2.54707e-06 0.000506959" quat="0.485292 0.514377 0.513772 0.485742" mass="0.164362" diaginertia="0.0001195 0.000115999 5.49467e-05"/>
               <joint name="5" pos="0 0 0" axis="0 1 0" range="-2.0071 2.0071" actuatorfrcrange="-10 10"/>
               <geom quat="0.707105 0.707108 0 0" type="mesh" material="mat_robot_metal" mesh="5_Link"/>
-              <body name="6_Link" pos="0.07 0 0" quat="0.707105 0 0.707108 0">
+              <body name="6_Link" pos="0.07 0 0" quat="0.707107 0 0.707107 0">
                 <inertial pos="-4.93382e-09 -3.06476e-06 -0.00515373" quat="0.499788 0.500212 -0.500212 0.499788" mass="0.00318159" diaginertia="1.633e-07 1.12762e-07 1.10035e-07"/>
                 <joint name="6" pos="0 0 0" axis="0 0 1" range="-6.2832 6.2832" actuatorfrcrange="-10 10"/>
                 <geom pos="0 0 -0.0125" quat="4.63268e-05 0 1 0" type="mesh" material="mat_robot_metal" mesh="6_Link"/>

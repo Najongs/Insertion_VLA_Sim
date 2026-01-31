@@ -77,7 +77,10 @@ class RtSampler(threading.Thread):
 
     def run(self):
         logger.info("🤖 Starting robot state sampler...")
-
+        
+        # Set configuration for MovePose (Shoulder, Elbow, Wrist)
+        self.robot.SetConf(1, 1, 1)
+        
         # Initial read
         initial_success = False
         for _ in range(10):
