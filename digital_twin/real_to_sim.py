@@ -12,30 +12,38 @@ Architecture:
 python /home/irom/NAS/VLA/Insertion_VLA_Sim/digital_twin/real_to_sim.py
 """
 
-import os
-import sys
 import time
 import threading
 import logging
 import numpy as np
-import queue
 from termcolor import colored
 import cv2
 import contextlib
 import pathlib
+from collections import deque
 
 import mujoco
 import mujoco.viewer
 import mecademicpy.robot as mdr
 import depthai as dai
 import pygame
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
+try:
+    from scipy.spatial.transform import Rotation as R
+except Exception:
+    R = None
 
 # === Configuration ===
 ROBOT_ADDRESS = "192.168.0.100"
-MODEL_PATH = "../Sim/meca_scene22.xml"
+MODEL_PATH = "../Sim/meca_add.xml"
 HOME_JOINTS = (0, 0, 0, 0, 0, 0) # (30, -20, 20, 0, 30, 60)
 CONTROL_FREQUENCY = 15  # Hz
 OUTPUT_DIR = pathlib.Path(__file__).resolve().parent / "recordings" / "real_to_sim"
+PLOT_HISTORY = 300
+PLOT_UPDATE_HZ = 10  # Hz
 
 # Gamepad settings (same as Robot_action.py)
 SCALE_POS = 0.8
@@ -296,6 +304,77 @@ class OAKCameraManager:
         self.stack.close()
 
 # ============================================================
+# Live EE Plotter
+# ============================================================
+class LiveEEPlotter:
+    def __init__(self, history_len=PLOT_HISTORY):
+        self.enabled = plt is not None
+        if not self.enabled:
+            logger.warning("⚠️ matplotlib not available: EE plot disabled")
+            return
+
+        self.history_len = history_len
+        self.t = deque(maxlen=history_len)
+        self.real = [deque(maxlen=history_len) for _ in range(6)]
+        self.sim = [deque(maxlen=history_len) for _ in range(6)]
+
+        plt.ion()
+        self.fig, self.axes = plt.subplots(6, 1, figsize=(6, 10), sharex=True)
+        self.fig.canvas.manager.set_window_title("EE Position (Real vs Sim)")
+
+        labels = ["x (mm)", "y (mm)", "z (mm)", "rx (rad)", "ry (rad)", "rz (rad)"]
+        self.lines_real = []
+        self.lines_sim = []
+        for i, ax in enumerate(self.axes):
+            lr, = ax.plot([], [], color="tab:blue", label="real")
+            ls, = ax.plot([], [], color="tab:orange", label="sim")
+            ax.set_ylabel(labels[i])
+            ax.grid(True, alpha=0.3)
+            self.lines_real.append(lr)
+            self.lines_sim.append(ls)
+        self.axes[-1].set_xlabel("samples")
+        self.axes[0].legend(loc="upper right")
+
+    def update(self, real_ee, sim_ee, step_idx):
+        if not self.enabled:
+            return
+        self.t.append(step_idx)
+        for i in range(6):
+            self.real[i].append(float(real_ee[i]))
+            self.sim[i].append(float(sim_ee[i]))
+
+        for i in range(6):
+            self.lines_real[i].set_data(self.t, self.real[i])
+            self.lines_sim[i].set_data(self.t, self.sim[i])
+            self.axes[i].relim()
+            self.axes[i].autoscale_view()
+
+        self.fig.canvas.draw_idle()
+        plt.pause(0.001)
+
+def _body_pose_mm_rad_world(data, body_id):
+    if body_id < 0:
+        return np.zeros(6, dtype=np.float32)
+    p = data.xpos[body_id].copy()
+    r = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+    pos_mm = p * 1000.0
+    if R is None:
+        sy = np.sqrt(r[0,0]**2 + r[1,0]**2)
+        if sy > 1e-6:
+            rx = np.arctan2(r[2,1], r[2,2])
+            ry = np.arctan2(-r[2,0], sy)
+            rz = np.arctan2(r[1,0], r[0,0])
+        else:
+            rx = np.arctan2(-r[1,2], r[1,1])
+            ry = np.arctan2(-r[2,0], sy)
+            rz = 0
+        return np.array([pos_mm[0], pos_mm[1], pos_mm[2], rx, ry, rz], dtype=np.float32)
+
+    euler = R.from_matrix(r).as_euler("xyz", degrees=True)
+    rx, ry, rz = np.deg2rad(euler)
+    return np.array([pos_mm[0], pos_mm[1], pos_mm[2], rx, ry, rz], dtype=np.float32)
+
+# ============================================================
 # Data Recorder (Real/Sim)
 # ============================================================
 class DataRecorder:
@@ -381,94 +460,6 @@ def _action_deg_to_rad(action):
     act[3:6] = np.deg2rad(act[3:6])
     return act
 
-def _get_dh_matrix(a, d, alpha_deg, theta_deg):
-    alpha = np.deg2rad(alpha_deg)
-    theta = np.deg2rad(theta_deg)
-    ca = np.cos(alpha)
-    sa = np.sin(alpha)
-    ct = np.cos(theta)
-    st = np.sin(theta)
-    return np.array(
-        [
-            [ct, -st * ca, st * sa, a * ct],
-            [st, ct * ca, -ct * sa, a * st],
-            [0.0, sa, ca, d],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-
-def _fk_ee_mm_rad_from_qpos_deg(qpos_deg):
-    dh_params = [
-        {"alpha": -90, "a": 0.0,   "d": 0.135, "theta_offset": 0},
-        {"alpha": 0,   "a": 0.135, "d": 0.0,   "theta_offset": -90},
-        {"alpha": -90, "a": 0.038, "d": 0.0,   "theta_offset": 0},
-        {"alpha": 90,  "a": 0.0,   "d": 0.120, "theta_offset": 0},
-        {"alpha": -90, "a": 0.0,   "d": 0.0,   "theta_offset": 0},
-        {"alpha": 0,   "a": 0.0,   "d": 0.070, "theta_offset": 0},
-    ]
-
-    # Base correction: Rx(180) then Rz(90)
-    rx = np.deg2rad(180.0)
-    rz = np.deg2rad(90.0)
-    cx, sx = np.cos(rx), np.sin(rx)
-    cz, sz = np.cos(rz), np.sin(rz)
-    rot_x_180 = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float64)
-    rot_z_90 = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float64)
-    r_base = rot_z_90 @ rot_x_180
-    t_base = np.eye(4, dtype=np.float64)
-    t_base[:3, :3] = r_base
-
-    t = t_base
-    for i in range(6):
-        params = dh_params[i]
-        theta = float(qpos_deg[i]) + params["theta_offset"]
-        t = t @ _get_dh_matrix(params["a"], params["d"], params["alpha"], theta)
-
-    pos_m = t[:3, 3]
-    quat = np.zeros(4, dtype=np.float64)
-    mujoco.mju_mat2Quat(quat, t[:3, :3].reshape(9))
-    euler = _quat_wxyz_to_euler_xyz(quat)
-    pos_mm = pos_m * 1000.0
-    pos_mm = np.array([pos_mm[1], pos_mm[0], -pos_mm[2]], dtype=np.float64)
-    rx, ry, rz = euler[0], euler[1], euler[2]
-    rx = -rx
-    rz = -rz
-    return np.array([pos_mm[0], pos_mm[1], pos_mm[2], rx, ry, rz], dtype=np.float32)
-    
-
-def _body_pose_mm_rad(data, body_id, base_offset=None, base_mat=None):
-    if body_id < 0:
-        return np.zeros(6, dtype=np.float32)
-    pos_m = data.xpos[body_id].copy()
-    if base_offset is not None:
-        pos_m = pos_m - base_offset
-    mat = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
-    if base_mat is not None:
-        # Remove base rotation: R_rel = R_base^T * R_link
-        mat = base_mat.T @ mat
-    mat = mat.reshape(9)
-    quat = np.zeros(4, dtype=np.float64)
-    mujoco.mju_mat2Quat(quat, mat)
-    euler = _quat_wxyz_to_euler_xyz(quat)
-    pos_mm = pos_m * 1000.0
-    return np.array([pos_mm[0], pos_mm[1], pos_mm[2], euler[0], euler[1], euler[2]], dtype=np.float32)
-
-def _body_pose_mm_rad_base_relative(data, body_id, base_geom_id):
-    if body_id < 0 or base_geom_id < 0:
-        return np.zeros(6, dtype=np.float32)
-    p_link = data.xpos[body_id].copy()
-    p_base = data.geom_xpos[base_geom_id].copy()
-    r_link = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
-    r_base = np.asarray(data.geom_xmat[base_geom_id], dtype=np.float64).reshape(3, 3)
-    p_rel = r_base.T @ (p_link - p_base)
-    r_rel = r_base.T @ r_link
-    quat = np.zeros(4, dtype=np.float64)
-    mujoco.mju_mat2Quat(quat, r_rel.reshape(9))
-    euler = _quat_wxyz_to_euler_xyz(quat)
-    pos_mm = p_rel * 1000.0
-    return np.array([pos_mm[0], pos_mm[1], pos_mm[2], euler[0], euler[1], euler[2]], dtype=np.float32)
-
 # ============================================================
 # Main
 # ============================================================
@@ -480,34 +471,18 @@ def main():
     model = mujoco.MjModel.from_xml_path(MODEL_PATH)
     data = mujoco.MjData(model)
 
-    # Get site IDs for visualization
-    try:
-        tip_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "needle_tip")
-        back_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "needle_back")
-    except:
-        logger.warning("⚠️ Needle sites not found")
-        tip_id = -1
-        back_id = -1
-
     # Link6 body for EE position (simulation)
     try:
         link6_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "6_Link")
     except:
         logger.warning("⚠️ Link6 body not found")
         link6_id = -1
-    # Base link geom for position reference
-    try:
-        base_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "base_link")
-    except:
-        logger.warning("⚠️ base_link geom not found")
-        base_geom_id = -1
-    base_offset = None
-    base_mat = None
 
     # Initialize gamepad and cameras
     gamepad = GamepadController()
     camera_mgr = OAKCameraManager()
     recorder = DataRecorder(OUTPUT_DIR)
+    plotter = LiveEEPlotter()
 
     try:
         # Connect to robot
@@ -532,15 +507,18 @@ def main():
         sampler = RtSampler(robot, rate_hz=100)
         sampler.start()
 
-        # Home pose comparison (real vs sim DH FK)
+        # Home pose comparison (real vs sim using DH FK)
         try:
             time.sleep(0.2)
             robot_q, robot_p = sampler.get_latest_data()
-            sim_q = np.array(robot_q, dtype=np.float32)
-            sim_ee = _fk_ee_mm_rad_from_qpos_deg(sim_q)
+            data.qpos[:6] = np.deg2rad(robot_q)
+            mujoco.mj_forward(model, data)
+            sim_ee = _body_pose_mm_rad_world(data, link6_id)
             real_ee = _pose_deg_to_rad(robot_p)
             logger.info(f"[HOME] real EE (mm,rad): {real_ee}")
             logger.info(f"[HOME] sim  EE (mm,rad): {sim_ee}")
+            pos_diff = np.linalg.norm(sim_ee[:3] - real_ee[:3])
+            logger.info(f"[HOME] Position difference: {pos_diff:.2f} mm")
         except Exception as e:
             logger.warning(f"[HOME] compare failed: {e}")
 
@@ -562,17 +540,13 @@ def main():
         # Set initial simulation pose
         data.qpos[:6] = np.deg2rad(HOME_JOINTS)
         mujoco.mj_forward(model, data)
-        if base_geom_id >= 0:
-            base_offset = data.geom_xpos[base_geom_id].copy()
-            base_mat = np.asarray(data.geom_xmat[base_geom_id], dtype=np.float64).reshape(3, 3)
-            logger.info(f"📍 Base offset applied (sim): {base_offset}")
-
         # Launch viewer
         with mujoco.viewer.launch_passive(model, data) as viewer:
             step_count = 0
             last_control_time = time.time()
             control_dt = 1.0 / CONTROL_FREQUENCY
             last_action = np.zeros(6, dtype=np.float32)
+            last_plot_time = 0.0
 
             while viewer.is_running():
                 step_start = time.time()
@@ -591,12 +565,15 @@ def main():
 
                 # Get real robot state
                 robot_q, robot_p = sampler.get_latest_data()
+                real_ee = _pose_deg_to_rad(robot_p)
 
                 # Update simulation to match robot
                 # Convert degrees to radians for MuJoCo
                 sim_qpos = np.deg2rad(robot_q)
                 data.qpos[:6] = sim_qpos
                 mujoco.mj_forward(model, data)
+                sim_q_deg = np.rad2deg(data.qpos[:6].copy()).astype(np.float32)
+                sim_ee = _body_pose_mm_rad_world(data, link6_id)
 
                 # Get camera frames
                 frames = camera_mgr.get_frames()
@@ -640,14 +617,18 @@ def main():
 
                     last_control_time = current_time
 
+                # Live plot (real vs sim EE)
+                if plotter.enabled:
+                    if current_time - last_plot_time >= 1.0 / float(PLOT_UPDATE_HZ):
+                        plotter.update(real_ee, sim_ee, step_count)
+                        last_plot_time = current_time
+
                 # Record data (real/sim)
                 if recorder.recording:
-                    real_ee = _pose_deg_to_rad(robot_p)
                     real_q = np.array(robot_q, dtype=np.float32)
                     real_act = _action_deg_to_rad(last_action)
 
-                    sim_q = np.rad2deg(data.qpos[:6].copy()).astype(np.float32)
-                    sim_ee = _fk_ee_mm_rad_from_qpos_deg(sim_q)
+                    sim_q = sim_q_deg
                     sim_act = real_act.copy()
 
                     recorder.add(real_ee, real_q, real_act, sim_ee, sim_q, sim_act, time.time())
