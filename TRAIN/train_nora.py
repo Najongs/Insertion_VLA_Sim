@@ -376,7 +376,7 @@ def load_model_and_processor(config: NoraTrainingConfig, accelerator: Accelerato
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         'declare-lab/nora',
         torch_dtype=torch.bfloat16,
-        attn_implementation="sdpa"  # Use PyTorch's SDPA instead of flash_attention_2 (GLIBC compatibility)
+        attn_implementation="flash_attention_2"  # Use PyTorch's SDPA instead of flash_attention_2 (GLIBC compatibility)
     )
 
     # Freeze Qwen VLM (vision encoder + language model), only train action decoder (lm_head)

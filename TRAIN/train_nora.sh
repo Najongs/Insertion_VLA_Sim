@@ -14,6 +14,37 @@
 set -e  # Exit on error
 
 # ============================================================
+# Conda Environment Setup (for tmux compatibility)
+# ============================================================
+
+# Initialize conda for bash shell (required for tmux)
+if [ -f "/opt/anaconda3/etc/profile.d/conda.sh" ]; then
+    source /opt/anaconda3/etc/profile.d/conda.sh
+elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+    source $HOME/anaconda3/etc/profile.d/conda.sh
+elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source $HOME/miniconda3/etc/profile.d/conda.sh
+else
+    echo "Warning: Could not find conda.sh. Trying to continue anyway..."
+fi
+
+# Activate lerobot conda environment
+echo "Activating 'lerobot' conda environment..."
+conda activate lerobot
+
+# Verify conda environment is activated
+if [ "$CONDA_DEFAULT_ENV" != "lerobot" ]; then
+    echo "Error: Failed to activate 'lerobot' conda environment"
+    echo "Current environment: $CONDA_DEFAULT_ENV"
+    exit 1
+fi
+
+echo "✓ Conda environment 'lerobot' activated successfully"
+echo "Python: $(which python)"
+echo "Python version: $(python --version)"
+echo ""
+
+# ============================================================
 # Configuration
 # ============================================================
 
