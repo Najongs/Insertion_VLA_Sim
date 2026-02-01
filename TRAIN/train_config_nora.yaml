@@ -1,0 +1,181 @@
+# NORA VLA Training Configuration
+# =================================
+# Configuration for training NORA VLA model with custom HDF5 datasets
+#
+# Based on: nora/training/train.py
+# Dataset: hdf5_lerobot_adapter.py
+#
+# Usage:
+#   python train_nora.py --config train_config_nora.yaml
+
+# ============================================================
+# Training Parameters
+# ============================================================
+# Batch size per GPU (freezing VLM allows larger batch size)
+# For 5 GPUs: effective batch size = per_device_batch_size × 5 × gradient_accumulation_steps
+# Example: 4 × 5 × 4 = 80 effective batch size
+per_device_batch_size: 2
+
+# Learning rate (NORA default: 5e-5)
+learning_rate: 0.00005  # 5e-5
+
+# Gradient accumulation steps
+# Reduced since we increased batch size
+gradient_accumulation_steps: 4
+
+# Warmup steps (0.5% of total training for stable convergence)
+# Recommended: 100-500 steps for VLA models
+# Current: 500 steps = 0.5% of 100k steps
+num_warmup_steps: 500
+
+# Total training steps
+max_train_steps: 10000
+
+# Gradient clipping (optional, set to null to disable)
+gradient_clipping: 1.0
+
+# ============================================================
+# Paths
+# ============================================================
+# Output directory for checkpoints and logs
+output_dir: "/home/najo/NAS/VLA/Insertion_VLA_Sim/outputs/nora_training"
+
+# Resume from checkpoint (empty string means train from scratch)
+resume_from_checkpoint: ""
+
+# Load pretrained model weights (optional, set to null to use default NORA weights)
+# Example: "/path/to/nora/checkpoint/model.safetensors"
+load_model_weights: null
+
+# ============================================================
+# Dataset Configuration
+# ============================================================
+dataset:
+  # Root directory containing HDF5 episode files
+  # The script will recursively find all .h5 files in this directory
+  root_dir: "/home/najo/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_sim_6d_clean/collected_data_merged"
+
+  # Action prediction horizon
+  # horizon=1: single-step action prediction
+  # horizon>1: multi-step action chunk prediction
+  horizon: 10
+
+  # State representation
+  # use_qpos: Use joint positions (6 dims)
+  # use_ee_pose: Use end-effector pose (6 dims)
+  # Both can be true for 12-dim state
+  use_qpos: false
+  use_ee_pose: true
+
+  # Action mode
+  # If true: Calculate action from ee_pose delta (pose[t+1] - pose[t])
+  # If false: Use pre-recorded action from HDF5 file
+  use_ee_pose_delta_as_action: true
+
+  # Task instruction
+  # Priority order for instruction generation:
+  # 1. If HDF5 has 'language_instruction' field → use that
+  # 2. If HDF5 has 'phase' field → generate from phase info
+  # 3. Otherwise → use this default instruction
+  task_instruction: "Insert the needle into the eye phantom trocar"
+
+  # Camera dropout (for robustness training)
+  # Probability of dropping out cameras during training
+  camera_dropout_prob: 0.0  # 0.0 = disabled, 0.3 = 30% chance
+
+  # Minimum number of cameras to keep active when dropout is enabled
+  min_cameras: 1
+
+  # Data Augmentation
+  # Enable image augmentation for training robustness
+  augment: false
+  augment_brightness: 0.2    # Max brightness adjustment factor
+  augment_contrast: 0.2      # Max contrast adjustment factor
+  augment_saturation: 0.2    # Max saturation adjustment factor
+  augment_hue: 0.05          # Max hue adjustment (in degrees / 360)
+  augment_noise: 0.02        # Gaussian noise std deviation
+
+  # Image resolution (reduced to 196 to fit in RTX 3090 24GB VRAM)
+  resize_resolution: [224, 224]
+
+  # Validation split
+  # Number of episodes to hold out for validation (0 = no validation)
+  # Validation episodes are taken from the end of the sorted episode list
+  num_val_episodes: 50
+
+# ============================================================
+# Validation Configuration
+# ============================================================
+# Validation frequency (in steps)
+# Run validation every N training steps
+val_frequency: 1000
+
+# ============================================================
+# DataLoader Configuration
+# ============================================================
+# Number of worker processes for data loading
+# Set to 0 for single-process loading (slow)
+# Set to 2-4 for multi-process loading with better performance
+# Reduced from higher values to prevent CPU resource exhaustion
+num_workers: 2
+
+# ============================================================
+# Logging and Checkpointing
+# ============================================================
+# W&B project name
+wandb_project_name: "NORA VLA Custom Dataset"
+
+# Checkpoint save frequency (in steps)
+checkpoint_save_frequency: 2000
+
+# Logging frequency (in steps)
+logging_frequency: 100
+
+# ============================================================
+# Training Notes
+# ============================================================
+#
+# 1. Dataset Structure:
+#    - HDF5 files should be in the root_dir (or subdirectories)
+#    - Each HDF5 file is one episode
+#    - Required fields in HDF5:
+#      * action: (N, action_dim) - robot actions
+#      * observations/ee_pose: (N, 6) - end-effector pose
+#      * observations/qpos: (N, 6) - joint positions (optional)
+#      * observations/images/camera1: (N, H, W, 3) - RGB images
+#      * timestamp: (N,) - timestamps
+#      * phase: (N,) - task phase (optional, for instruction generation)
+#      * language_instruction: str - task instruction (optional)
+#
+# 2. NORA Model:
+#    - Based on Qwen2.5-VL vision-language model
+#    - Uses FAST tokenizer for action quantization
+#    - Action tokens: <robot_action_0>, <robot_action_1>, ...
+#    - Token range: 151665-153712
+#
+# 3. Training Process:
+#    - Images are processed with Qwen2.5-VL processor
+#    - Actions are tokenized with FAST tokenizer
+#    - Model learns to predict action tokens given image + language
+#    - Loss is computed only on action tokens (instruction tokens are masked)
+#
+# 4. Multi-GPU Training:
+#    - Uses Accelerate for distributed training
+#    - Effective batch size = per_device_batch_size × num_gpus × gradient_accumulation_steps
+#    - Example: 16 × 4 GPUs × 2 = 128 effective batch size
+#
+# 5. Checkpointing:
+#    - Checkpoints saved every checkpoint_save_frequency steps
+#    - Resume training with: resume_from_checkpoint: "/path/to/checkpoint"
+#    - Checkpoints include: model, optimizer, scheduler, dataloader state
+#
+# 6. Fine-tuning:
+#    - To fine-tune from a pretrained checkpoint:
+#      load_model_weights: "/path/to/model.safetensors"
+#    - This loads only model weights, not optimizer/scheduler state
+#
+# 7. Expected Performance:
+#    - Initial loss: ~8-10 (random predictions)
+#    - Converged loss: ~2-4 (depends on task complexity)
+#    - Training time: ~24-48 hours for 100k steps on 4x A100
+#

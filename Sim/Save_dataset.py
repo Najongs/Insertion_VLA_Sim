@@ -303,7 +303,7 @@ def main():
                 recorder.add(frames, current_qpos_deg, current_ee_pose_mm, delta_ee_action, data.time, task_state, current_sensor_dist)
                 last_ee_pose = current_ee_pose_mm.copy()
 
-            if data.time - traj_start_time > 60.0: break
+            if data.time - traj_start_time > 50.0: break
 
         if success: recorder.save_async(); episode_count += 1; pbar.update(1)
         else: recorder.discard()

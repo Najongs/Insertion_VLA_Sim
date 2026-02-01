@@ -13,7 +13,7 @@ python plot_episode_actions.py \
     --output_dir ./outputs/action_plots
 
 python plot_episode_actions.py \
-    --episode /home/irom/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_sim_clean/episode_20260201_055306.h5 \
+    --episode /home/najo/NAS/VLA/Insertion_VLA_Sim/Sim/collected_data_sim_clean/episode_20260201_060729.h5 \
     --output_dir ./outputs/action_plots
 """
 

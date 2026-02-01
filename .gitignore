@@ -26,6 +26,7 @@ wandb/
 
 # git cloen
 lerobot/
+nora/
 
 # Distribution / packaging
 .Python

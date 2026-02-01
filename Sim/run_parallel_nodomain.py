@@ -4,7 +4,7 @@ Simple Parallel Data Collection (Without Domain Randomization)
 Runs multiple Save_dataset.py instances in parallel
 
 Usage:
-    python run_parallel_nodomain.py --workers 10 --episodes 100
+    python run_parallel_nodomain.py --workers 10 --episodes 300
 """
 
 import os

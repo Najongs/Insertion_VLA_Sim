@@ -455,6 +455,13 @@ class HDF5LeRobotDataset(Dataset):
                     img_tensor = img_tensor.permute(2, 0, 1)  # (H,W,C) -> (C,H,W)
                     img_tensors.append(img_tensor)
 
+                    # FIXED: Explicit memory cleanup to prevent accumulation
+                    del img_np
+                    if self.is_jpeg_format and 'img_bgr' in locals():
+                        del img_bgr
+                    if 'img_float' in locals():
+                        del img_float
+
                 # Stack temporal observations: list of (C, H, W) -> (n_obs_steps, C, H, W)
                 lerobot_sample[f"observation.images.{cam_key}"] = torch.stack(img_tensors, dim=0)
 
@@ -569,6 +576,21 @@ class HDF5LeRobotDataset(Dataset):
             lerobot_sample["observation.language.attention_mask"] = self.task_attention_mask.clone()
 
         return lerobot_sample
+
+    def __getstate__(self):
+        """Close HDF5 file before pickling for multiprocessing."""
+        state = self.__dict__.copy()
+        # Close h5 file before sending to worker process
+        if 'h5file' in state and state['h5file'] is not None:
+            state['h5file'].close()
+            state['h5file'] = None
+        return state
+
+    def __setstate__(self, state):
+        """Reopen HDF5 file after unpickling in worker process."""
+        self.__dict__.update(state)
+        # Reopen HDF5 file in worker process
+        self.h5file = h5py.File(str(self.hdf5_path), 'r')
 
     def __del__(self):
         """Close HDF5 file when dataset is destroyed."""
